@@ -1,0 +1,1087 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query } from 'firebase/firestore';
+
+// Firebase configuration and initialization
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+function App() {
+    // State variables for Firebase and user authentication
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+
+    // Navigation state
+    const [activeTab, setActiveTab] = useState('vendas'); // 'vendas', 'produtos', 'historico-pet', 'historico-vendas'
+
+    // Product Management States
+    const [productCode, setProductCode] = useState('');
+    const [productName, setProductName] = useState('');
+    const [productPrice, setProductPrice] = useState('');
+    const [productStock, setProductStock] = useState('');
+    const [productImageUrl, setProductImageUrl] = useState('');
+    const [productSaleType, setProductSaleType] = useState('by_unit'); // 'by_unit' or 'by_kg'
+    const [products, setProducts] = useState([]);
+    const [editingProduct, setEditingProduct] = useState(null);
+
+    // Sales Management States
+    const [currentSale, setCurrentSale] = useState([]); // { product, quantity }
+    const [paymentMethod, setPaymentMethod] = useState('dinheiro');
+    const [attendantName, setAttendantName] = useState('');
+    const [discountPercentage, setDiscountPercentage] = useState(0);
+    const [salesHistory, setSalesHistory] = useState([]);
+    const [showSaleConfirmation, setShowSaleConfirmation] = useState(false); // New state for confirmation message visibility
+    const [lastSaleDetails, setLastSaleDetails] = useState(null); // New state for last sale details
+
+    // Pet History States
+    const [petName, setPetName] = useState('');
+    const [petNotes, setPetNotes] = useState('');
+    const [pets, setPets] = useState([]);
+    const [editingPet, setEditingPet] = useState(null);
+    const [selectedPet, setSelectedPet] = useState(null);
+
+    // Initialize Firebase and set up authentication listener
+    useEffect(() => {
+        try {
+            const app = initializeApp(firebaseConfig);
+            const firestore = getFirestore(app);
+            const authentication = getAuth(app);
+
+            setDb(firestore);
+            setAuth(authentication);
+
+            const unsubscribe = onAuthStateChanged(authentication, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                } else {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined') {
+                            await signInWithCustomToken(authentication, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(authentication);
+                        }
+                    } catch (error) {
+                        console.error("Erro ao autenticar anonimamente:", error);
+                    }
+                }
+                setIsAuthReady(true);
+            });
+
+            return () => unsubscribe();
+        } catch (error) {
+            console.error("Erro ao inicializar Firebase:", error);
+        }
+    }, []);
+
+    // Fetch products, sales, and pets from Firestore
+    useEffect(() => {
+        if (db && userId && isAuthReady) {
+            // Fetch Products
+            const productsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/products`);
+            const unsubscribeProducts = onSnapshot(productsCollectionRef, (snapshot) => {
+                const productsData = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                setProducts(productsData);
+            }, (error) => {
+                console.error("Erro ao buscar produtos:", error);
+            });
+
+            // Fetch Sales History
+            const salesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/sales`);
+            const unsubscribeSales = onSnapshot(salesCollectionRef, (snapshot) => {
+                const salesData = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                salesData.sort((a, b) => new Date(b.saleDate) - new Date(a.saleDate)); // Sort by date descending
+                setSalesHistory(salesData);
+            }, (error) => {
+                console.error("Erro ao buscar histórico de vendas:", error);
+            });
+
+            // Fetch Pets
+            const petsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/pets`);
+            const unsubscribePets = onSnapshot(petsCollectionRef, (snapshot) => {
+                const petsData = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                setPets(petsData);
+            }, (error) => {
+                console.error("Erro ao buscar pets:", error);
+            });
+
+            return () => {
+                unsubscribeProducts();
+                unsubscribeSales();
+                unsubscribePets();
+            };
+        }
+    }, [db, userId, isAuthReady]);
+
+    // --- Product Management Functions ---
+    const handleAddOrUpdateProduct = async (e) => {
+        e.preventDefault();
+        if (!productCode || !productName || productPrice === '' || productStock === '') {
+            alert('Por favor, preencha todos os campos do produto.');
+            return;
+        }
+        if (!db || !userId) return;
+
+        const productData = {
+            code: productCode,
+            name: productName,
+            price: parseFloat(productPrice),
+            stock: parseInt(productStock),
+            imageUrl: productImageUrl,
+            saleType: productSaleType, // Save sale type
+        };
+
+        try {
+            if (editingProduct) {
+                await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/products`, editingProduct.id), productData);
+                setEditingProduct(null);
+            } else {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/products`), productData);
+            }
+            setProductCode('');
+            setProductName('');
+            setProductPrice('');
+            setProductStock('');
+            setProductImageUrl('');
+            setProductSaleType('by_unit'); // Reset sale type
+        } catch (error) {
+            console.error("Erro ao adicionar/atualizar produto:", error);
+        }
+    };
+
+    const handleEditProduct = (product) => {
+        setEditingProduct(product);
+        setProductCode(product.code);
+        setProductName(product.name);
+        setProductPrice(product.price);
+        setProductStock(product.stock);
+        setProductImageUrl(product.imageUrl || '');
+        setProductSaleType(product.saleType || 'by_unit'); // Load sale type
+    };
+
+    const handleDeleteProduct = async (id) => {
+        if (!db || !userId) return;
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/products`, id));
+        } catch (error) {
+            console.error("Erro ao excluir produto:", error);
+        }
+    };
+
+    // --- Sales Management Functions ---
+    const handleAddProductToSale = (code) => {
+        const productToAdd = products.find(p => p.code === code);
+        if (!productToAdd) {
+            alert('Produto não encontrado.');
+            return;
+        }
+        if (productToAdd.stock <= 0 && productToAdd.saleType === 'by_unit') {
+            alert('Produto fora de estoque.');
+            return;
+        }
+
+        const existingItemIndex = currentSale.findIndex(item => item.product.id === productToAdd.id);
+        if (existingItemIndex > -1) {
+            const updatedSale = [...currentSale];
+            if (productToAdd.saleType === 'by_unit') {
+                if (updatedSale[existingItemIndex].quantity < productToAdd.stock) {
+                    updatedSale[existingItemIndex].quantity += 1;
+                    setCurrentSale(updatedSale);
+                } else {
+                    alert('Estoque insuficiente para adicionar mais unidades.');
+                }
+            } else { // by_kg, just increment by 1kg default
+                updatedSale[existingItemIndex].quantity += 1; // Default to adding 1kg
+                setCurrentSale(updatedSale);
+            }
+        } else {
+            setCurrentSale([...currentSale, { product: productToAdd, quantity: 1 }]); // Default to 1 unit or 1kg
+        }
+    };
+
+    const handleRemoveProductFromSale = (productId) => {
+        setCurrentSale(currentSale.filter(item => item.product.id !== productId));
+    };
+
+    const handleUpdateSaleQuantity = (productId, newQuantity) => {
+        setCurrentSale(currentSale.map(item => {
+            if (item.product.id === productId) {
+                // For 'by_unit', check against stock. For 'by_kg', newQuantity is just the kg value.
+                const quantity = item.product.saleType === 'by_unit'
+                    ? Math.max(1, Math.min(newQuantity, item.product.stock))
+                    : Math.max(0.01, newQuantity); // Minimum 0.01kg for by_kg
+                return { ...item, quantity };
+            }
+            return item;
+        }));
+    };
+
+    const calculateTotal = () => {
+        let subtotal = currentSale.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
+        const discountAmount = subtotal * (discountPercentage / 100);
+        return subtotal - discountAmount;
+    };
+
+    const handleFinalizeSale = async () => {
+        if (currentSale.length === 0) {
+            alert('Adicione produtos à venda antes de finalizar.');
+            return;
+        }
+        if (!db || !userId) return;
+        if (!attendantName) {
+            alert('Por favor, informe o nome do atendente.');
+            return;
+        }
+
+        try {
+            // Update stock for each product
+            for (const item of currentSale) {
+                const productRef = doc(db, `artifacts/${appId}/users/${userId}/products`, item.product.id);
+                // For 'by_kg' items, stock is also in kg, so subtract directly
+                await updateDoc(productRef, {
+                    stock: item.product.stock - item.quantity
+                });
+            }
+
+            // Record the sale
+            const saleData = {
+                items: currentSale.map(item => ({
+                    productId: item.product.id,
+                    productCode: item.product.code,
+                    productName: item.product.name,
+                    price: item.product.price,
+                    quantity: item.quantity,
+                    imageUrl: item.product.imageUrl || '',
+                    saleType: item.product.saleType || 'by_unit', // Include sale type in sale item
+                })),
+                total: calculateTotal(),
+                paymentMethod,
+                attendantName,
+                discountPercentage,
+                saleDate: new Date().toISOString(),
+            };
+            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/sales`), saleData);
+
+            // Set last sale details and show confirmation
+            setLastSaleDetails({
+                total: calculateTotal(),
+                paymentMethod: paymentMethod.replace('-', ' '),
+            });
+            setShowSaleConfirmation(true);
+
+            // Clear current sale and related fields
+            setCurrentSale([]);
+            setAttendantName('');
+            setDiscountPercentage(0);
+        } catch (error) {
+            console.error("Erro ao finalizar venda:", error);
+            alert('Erro ao finalizar venda. Verifique o console para mais detalhes.');
+        }
+    };
+
+    // --- Pet History Functions ---
+    const handleAddOrUpdatePet = async (e) => {
+        e.preventDefault();
+        if (!petName) {
+            alert('Por favor, preencha o nome do pet.');
+            return;
+        }
+        if (!db || !userId) return;
+
+        const petData = {
+            name: petName,
+            notes: petNotes,
+        };
+
+        try {
+            if (editingPet) {
+                await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/pets`, editingPet.id), petData);
+                setEditingPet(null);
+            } else {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/pets`), petData);
+            }
+            setPetName('');
+            setPetNotes('');
+        } catch (error) {
+            console.error("Erro ao adicionar/atualizar pet:", error);
+        }
+    };
+
+    const handleEditPetDetails = (pet) => {
+        setEditingPet(pet);
+        setPetName(pet.name);
+        setPetNotes(pet.notes);
+        setSelectedPet(null); // Close bath manager if open
+    };
+
+    const handleDeletePet = async (id) => {
+        if (!db || !userId) return;
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/pets`, id));
+            if (selectedPet && selectedPet.id === id) {
+                setSelectedPet(null); // Deselect pet if deleted
+            }
+        } catch (error) {
+            console.error("Erro ao excluir pet:", error);
+        }
+    };
+
+    const handleViewPetBaths = (pet) => {
+        setSelectedPet(pet);
+        setEditingPet(null); // Close pet editing form
+    };
+
+    if (!isAuthReady) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                <div className="text-lg font-semibold text-gray-700">Carregando...</div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-pink-100 to-orange-100 p-4 font-inter">
+            <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-2xl p-6 md:p-8">
+                <h1 className="text-3xl md:text-4xl font-extrabold text-center text-pink-800 mb-6">
+                    🐾 Bella Pet - Gestão Completa 🐾
+                </h1>
+
+                {userId && (
+                    <div className="text-center text-sm text-gray-600 mb-4">
+                        Seu ID de Usuário: <span className="font-mono bg-gray-100 p-1 rounded">{userId}</span>
+                    </div>
+                )}
+
+                {/* Navigation Tabs */}
+                <div className="flex justify-center mb-6 border-b border-gray-200">
+                    <button
+                        className={`py-2 px-4 text-lg font-medium ${activeTab === 'vendas' ? 'border-b-2 border-pink-500 text-pink-600' : 'text-gray-600 hover:text-pink-500'}`}
+                        onClick={() => setActiveTab('vendas')}
+                    >
+                        Vendas
+                    </button>
+                    <button
+                        className={`py-2 px-4 text-lg font-medium ${activeTab === 'produtos' ? 'border-b-2 border-pink-500 text-pink-600' : 'text-gray-600 hover:text-pink-500'}`}
+                        onClick={() => setActiveTab('produtos')}
+                    >
+                        Produtos
+                    </button>
+                    <button
+                        className={`py-2 px-4 text-lg font-medium ${activeTab === 'historico-vendas' ? 'border-b-2 border-pink-500 text-pink-600' : 'text-gray-600 hover:text-pink-500'}`}
+                        onClick={() => setActiveTab('historico-vendas')}
+                    >
+                        Histórico de Vendas
+                    </button>
+                    <button
+                        className={`py-2 px-4 text-lg font-medium ${activeTab === 'historico-pet' ? 'border-b-2 border-pink-500 text-pink-600' : 'text-gray-600 hover:text-pink-500'}`}
+                        onClick={() => setActiveTab('historico-pet')}
+                    >
+                        Histórico do Pet
+                    </button>
+                </div>
+
+                {/* Sales Tab Content */}
+                {activeTab === 'vendas' && (
+                    <div className="p-6 bg-orange-50 rounded-lg shadow-inner">
+                        <h2 className="text-2xl font-bold text-orange-700 mb-4 text-center">Realizar Nova Venda</h2>
+                        <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label htmlFor="attendantName" className="block text-gray-700 text-sm font-bold mb-2">Atendente:</label>
+                                <input
+                                    type="text"
+                                    id="attendantName"
+                                    placeholder="Nome do Atendente"
+                                    className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-orange-500"
+                                    value={attendantName}
+                                    onChange={(e) => setAttendantName(e.target.value)}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label htmlFor="discountPercentage" className="block text-gray-700 text-sm font-bold mb-2">Desconto (%):</label>
+                                <input
+                                    type="number"
+                                    id="discountPercentage"
+                                    placeholder="0-100"
+                                    min="0"
+                                    max="100"
+                                    className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-orange-500"
+                                    value={discountPercentage}
+                                    onChange={(e) => setDiscountPercentage(Math.min(Math.max(0, parseInt(e.target.value || '0')), 100))}
+                                />
+                            </div>
+                        </div>
+                        <div className="mb-4 flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Código do Produto"
+                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-orange-500"
+                                onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                        handleAddProductToSale(e.target.value);
+                                        e.target.value = ''; // Clear input after adding
+                                    }
+                                }}
+                            />
+                            <button
+                                onClick={() => handleAddProductToSale(document.querySelector('input[placeholder="Código do Produto"]').value)}
+                                className="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition duration-300"
+                            >
+                                Adicionar
+                            </button>
+                        </div>
+
+                        <h3 className="text-xl font-semibold text-orange-600 mb-3">Itens da Venda:</h3>
+                        {currentSale.length === 0 ? (
+                            <p className="text-gray-500 text-center">Nenhum item na venda.</p>
+                        ) : (
+                            <div className="overflow-x-auto mb-4">
+                                <table className="min-w-full bg-white rounded-lg shadow-md">
+                                    <thead className="bg-orange-200">
+                                        <tr>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800"></th> {/* For image */}
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800">Produto</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800">Preço Unit.</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800">Qtd./Kg</th> {/* Updated header */}
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800">Subtotal</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-orange-800">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {currentSale.map(item => (
+                                            <tr key={item.product.id} className="border-b border-gray-200">
+                                                <td className="py-2 px-3">
+                                                    {item.product.imageUrl ? (
+                                                        <img src={item.product.imageUrl} alt={item.product.name} className="w-12 h-12 object-cover rounded-md" onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/48x48/cccccc/000000?text=Sem+Img"; }} />
+                                                    ) : (
+                                                        <img src="https://placehold.co/48x48/cccccc/000000?text=Sem+Img" alt="Placeholder" className="w-12 h-12 object-cover rounded-md" />
+                                                    )}
+                                                </td>
+                                                <td className="py-2 px-3 text-gray-800">{item.product.name}</td>
+                                                <td className="py-2 px-3 text-gray-800">R$ {item.product.price.toFixed(2).replace('.', ',')}</td>
+                                                <td className="py-2 px-3 flex items-center">
+                                                    <input
+                                                        type="number"
+                                                        min={item.product.saleType === 'by_unit' ? "1" : "0.01"}
+                                                        step={item.product.saleType === 'by_unit' ? "1" : "0.01"}
+                                                        max={item.product.saleType === 'by_unit' ? item.product.stock : 9999}
+                                                        value={item.quantity}
+                                                        onChange={(e) => handleUpdateSaleQuantity(item.product.id, parseFloat(e.target.value))}
+                                                        className="w-20 border rounded text-center"
+                                                    />
+                                                    <span className="ml-1 text-gray-700">{item.product.saleType === 'by_unit' ? 'un' : 'kg'}</span>
+                                                </td>
+                                                <td className="py-2 px-3 text-gray-800">R$ {(item.product.price * item.quantity).toFixed(2).replace('.', ',')}</td>
+                                                <td className="py-2 px-3">
+                                                    <button
+                                                        onClick={() => handleRemoveProductFromSale(item.product.id)}
+                                                        className="bg-red-400 hover:bg-red-500 text-white py-1 px-2 rounded-full text-xs"
+                                                    >
+                                                        Remover
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        <div className="flex justify-between items-center mt-4 mb-6 p-3 bg-orange-100 rounded-lg shadow">
+                            <span className="text-xl font-bold text-orange-800">Total: R$ {calculateTotal().toFixed(2).replace('.', ',')}</span>
+                            <div>
+                                <label htmlFor="paymentMethod" className="block text-gray-700 text-sm font-bold mb-1">
+                                    Forma de Pagamento:
+                                </label>
+                                <select
+                                    id="paymentMethod"
+                                    className="shadow appearance-none border rounded-lg py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-orange-500"
+                                    value={paymentMethod}
+                                    onChange={(e) => setPaymentMethod(e.target.value)}
+                                >
+                                    <option value="dinheiro">Dinheiro</option>
+                                    <option value="cartao-credito">Cartão de Crédito</option>
+                                    <option value="cartao-debito">Cartão de Débito</option>
+                                    <option value="pix">PIX</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div className="flex justify-center">
+                            <button
+                                onClick={handleFinalizeSale}
+                                className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105"
+                            >
+                                Finalizar Venda
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Product Management Tab Content */}
+                {activeTab === 'produtos' && (
+                    <div className="p-6 bg-pink-50 rounded-lg shadow-inner">
+                        <h2 className="text-2xl font-bold text-pink-700 mb-4 text-center">Gerenciar Produtos</h2>
+                        <form onSubmit={handleAddOrUpdateProduct} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 p-6 bg-pink-100 rounded-lg shadow">
+                            <div>
+                                <label htmlFor="productCode" className="block text-gray-700 text-sm font-bold mb-2">Código:</label>
+                                <input type="text" id="productCode" className="shadow border rounded-lg w-full py-2 px-3" value={productCode} onChange={(e) => setProductCode(e.target.value)} required />
+                            </div>
+                            <div>
+                                <label htmlFor="productName" className="block text-gray-700 text-sm font-bold mb-2">Nome:</label>
+                                <input type="text" id="productName" className="shadow border rounded-lg w-full py-2 px-3" value={productName} onChange={(e) => setProductName(e.target.value)} required />
+                            </div>
+                            <div>
+                                <label htmlFor="productPrice" className="block text-gray-700 text-sm font-bold mb-2">Preço:</label>
+                                <input type="number" id="productPrice" step="0.01" className="shadow border rounded-lg w-full py-2 px-3" value={productPrice} onChange={(e) => setProductPrice(e.target.value)} required />
+                            </div>
+                            <div>
+                                <label htmlFor="productStock" className="block text-gray-700 text-sm font-bold mb-2">Estoque:</label>
+                                <input type="number" id="productStock" className="shadow border rounded-lg w-full py-2 px-3" value={productStock} onChange={(e) => setProductStock(e.target.value)} required />
+                            </div>
+                            <div className="md:col-span-2">
+                                <label htmlFor="productImageUrl" className="block text-gray-700 text-sm font-bold mb-2">URL da Imagem (opcional):</label>
+                                <input type="text" id="productImageUrl" className="shadow border rounded-lg w-full py-2 px-3" value={productImageUrl} onChange={(e) => setProductImageUrl(e.target.value)} placeholder="Ex: https://example.com/imagem.jpg" />
+                            </div>
+                            <div className="md:col-span-2">
+                                <label htmlFor="productSaleType" className="block text-gray-700 text-sm font-bold mb-2">Tipo de Venda:</label>
+                                <select
+                                    id="productSaleType"
+                                    className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-pink-500"
+                                    value={productSaleType}
+                                    onChange={(e) => setProductSaleType(e.target.value)}
+                                >
+                                    <option value="by_unit">Por Unidade</option>
+                                    <option value="by_kg">Por Quilo</option>
+                                </select>
+                            </div>
+                            <div className="md:col-span-2 flex justify-center">
+                                <button type="submit" className="bg-pink-600 hover:bg-pink-700 text-white font-bold py-2 px-6 rounded-full shadow-lg transition duration-300">
+                                    {editingProduct ? 'Atualizar Produto' : 'Adicionar Produto'}
+                                </button>
+                            </div>
+                        </form>
+
+                        <h3 className="text-xl font-semibold text-pink-600 mb-3">Lista de Produtos:</h3>
+                        {products.length === 0 ? (
+                            <p className="text-gray-500 text-center">Nenhum produto cadastrado.</p>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full bg-white rounded-lg shadow-md">
+                                    <thead className="bg-pink-200">
+                                        <tr>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800"></th> {/* For image */}
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Código</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Nome</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Preço</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Estoque</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Tipo Venda</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-pink-800">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {products.map(product => (
+                                            <tr key={product.id} className="border-b border-gray-200">
+                                                <td className="py-2 px-3">
+                                                    {product.imageUrl ? (
+                                                        <img src={product.imageUrl} alt={product.name} className="w-12 h-12 object-cover rounded-md" onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/48x48/cccccc/000000?text=Sem+Img"; }} />
+                                                    ) : (
+                                                        <img src="https://placehold.co/48x48/cccccc/000000?text=Sem+Img" alt="Placeholder" className="w-12 h-12 object-cover rounded-md" />
+                                                    )}
+                                                </td>
+                                                <td className="py-2 px-3 text-gray-800">{product.code}</td>
+                                                <td className="py-2 px-3 text-gray-800">{product.name}</td>
+                                                <td className="py-2 px-3 text-gray-800">R$ {product.price.toFixed(2).replace('.', ',')}</td>
+                                                <td className="py-2 px-3 text-gray-800">{product.stock}</td>
+                                                <td className="py-2 px-3 text-gray-800 capitalize">{product.saleType === 'by_unit' ? 'Unidade' : 'Quilo'}</td>
+                                                <td className="py-2 px-3 flex space-x-2">
+                                                    <button onClick={() => handleEditProduct(product)} className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-3 rounded-full text-xs">Editar</button>
+                                                    <button onClick={() => handleDeleteProduct(product.id)} className="bg-red-500 hover:bg-red-600 text-white py-1 px-3 rounded-full text-xs">Excluir</button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Sales History Tab Content */}
+                {activeTab === 'historico-vendas' && (
+                    <div className="p-6 bg-purple-50 rounded-lg shadow-inner">
+                        <h2 className="text-2xl font-bold text-purple-700 mb-4 text-center">Histórico de Vendas</h2>
+                        {salesHistory.length === 0 ? (
+                            <p className="text-gray-500 text-center">Nenhuma venda registrada ainda.</p>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full bg-white rounded-lg shadow-md">
+                                    <thead className="bg-purple-200">
+                                        <tr>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Data da Venda</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Atendente</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Itens</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Desconto (%)</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Total</th>
+                                            <th className="py-2 px-3 text-left text-sm font-semibold text-purple-800">Pagamento</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {salesHistory.map(sale => (
+                                            <tr key={sale.id} className="border-b border-gray-200">
+                                                <td className="py-2 px-3 text-gray-800">{new Date(sale.saleDate).toLocaleString('pt-BR')}</td>
+                                                <td className="py-2 px-3 text-gray-800">{sale.attendantName || 'N/A'}</td>
+                                                <td className="py-2 px-3 text-gray-800">
+                                                    <ul className="list-disc list-inside">
+                                                        {sale.items.map((item, index) => (
+                                                            <li key={index}>{item.quantity}{item.saleType === 'by_unit' ? 'x' : 'kg'} {item.productName} (R$ {item.price.toFixed(2).replace('.', ',')})</li>
+                                                        ))}
+                                                    </ul>
+                                                </td>
+                                                <td className="py-2 px-3 text-gray-800">{sale.discountPercentage || 0}%</td>
+                                                <td className="py-2 px-3 text-gray-800">R$ {sale.total.toFixed(2).replace('.', ',')}</td>
+                                                <td className="py-2 px-3 text-gray-800 capitalize">{sale.paymentMethod.replace('-', ' ')}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Pet History Tab Content */}
+                {activeTab === 'historico-pet' && (
+                    <div className="p-6 bg-blue-50 rounded-lg shadow-inner">
+                        <h2 className="text-2xl font-bold text-blue-700 mb-4 text-center">Gerenciar Pets</h2>
+                        {!selectedPet ? (
+                            <>
+                                {/* Form to add/edit pet details */}
+                                <form onSubmit={handleAddOrUpdatePet} className="grid grid-cols-1 gap-4 mb-8 p-6 bg-blue-100 rounded-lg shadow">
+                                    <div>
+                                        <label htmlFor="petName" className="block text-gray-700 text-sm font-bold mb-2">Nome do Pet:</label>
+                                        <input type="text" id="petName" className="shadow border rounded-lg w-full py-2 px-3" value={petName} onChange={(e) => setPetName(e.target.value)} required />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="petNotes" className="block text-gray-700 text-sm font-bold mb-2">Notas/Histórico Geral:</label>
+                                        <textarea id="petNotes" rows="4" className="shadow border rounded-lg w-full py-2 px-3" value={petNotes} onChange={(e) => setPetNotes(e.target.value)}></textarea>
+                                    </div>
+                                    <div className="flex justify-center">
+                                        <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full shadow-lg transition duration-300">
+                                            {editingPet ? 'Atualizar Pet' : 'Adicionar Pet'}
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <h3 className="text-xl font-semibold text-blue-600 mb-3">Lista de Pets:</h3>
+                                {pets.length === 0 ? (
+                                    <p className="text-gray-500 text-center">Nenhum pet cadastrado.</p>
+                                ) : (
+                                    <div className="overflow-x-auto">
+                                        <table className="min-w-full bg-white rounded-lg shadow-md">
+                                            <thead className="bg-blue-200">
+                                                <tr>
+                                                    <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Nome do Pet</th>
+                                                    <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Notas</th>
+                                                    <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Ações</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {pets.map(pet => (
+                                                    <tr key={pet.id} className="border-b border-gray-200">
+                                                        <td className="py-2 px-3 text-gray-800">{pet.name}</td>
+                                                        <td className="py-2 px-3 text-gray-800 max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">{pet.notes || 'N/A'}</td>
+                                                        <td className="py-2 px-3 flex space-x-2">
+                                                            <button onClick={() => handleEditPetDetails(pet)} className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-3 rounded-full text-xs">Editar</button>
+                                                            <button onClick={() => handleViewPetBaths(pet)} className="bg-green-500 hover:bg-green-600 text-white py-1 px-3 rounded-full text-xs">Ver Banhos</button>
+                                                            <button onClick={() => handleDeletePet(pet.id)} className="bg-red-500 hover:bg-red-600 text-white py-1 px-3 rounded-full text-xs">Excluir</button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <PetBathManager
+                                db={db}
+                                userId={userId}
+                                selectedPet={selectedPet}
+                                onClose={() => setSelectedPet(null)}
+                                appId={appId} // Pass appId to the child component
+                            />
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* Sale Confirmation Message Box */}
+            {showSaleConfirmation && lastSaleDetails && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white p-8 rounded-lg shadow-xl text-center max-w-sm w-full">
+                        <h3 className="text-2xl font-bold text-green-700 mb-4">Venda Finalizada com Sucesso! 🎉</h3>
+                        <p className="text-gray-800 text-lg mb-2">
+                            Total: <span className="font-semibold">R$ {lastSaleDetails.total.toFixed(2).replace('.', ',')}</span>
+                        </p>
+                        <p className="text-gray-800 text-lg mb-6">
+                            Forma de Pagamento: <span className="font-semibold capitalize">{lastSaleDetails.paymentMethod}</span>
+                        </p>
+                        <button
+                            onClick={() => setShowSaleConfirmation(false)}
+                            className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-full shadow-md transition duration-300"
+                        >
+                            Fechar
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// PetBathManager Component (no changes here, keeping it for completeness)
+function PetBathManager({ db, userId, selectedPet, onClose, appId }) {
+    const [scheduledDate, setScheduledDate] = useState('');
+    const [isPaid, setIsPaid] = useState(false);
+    const [isTaken, setIsTaken] = useState(false);
+    const [bathType, setBathType] = useState('avulso');
+    const [planBathsTaken, setPlanBathsTaken] = useState(0);
+    const [hygienicGroomingDone, setHygienicGroomingDone] = useState(false);
+    const [baths, setBaths] = useState([]);
+    const [editingBath, setEditingBath] = useState(null);
+
+    // Fetch baths for the selected pet
+    useEffect(() => {
+        if (db && userId && selectedPet) {
+            const bathsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`);
+            const q = query(bathsCollectionRef);
+
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const bathsData = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                bathsData.sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
+                setBaths(bathsData);
+            }, (error) => {
+                console.error("Erro ao buscar banhos do pet:", error);
+            });
+
+            return () => unsubscribe();
+        }
+    }, [db, userId, selectedPet, appId]);
+
+    // Reset form when selectedPet changes or when editing is done
+    useEffect(() => {
+        if (!editingBath) {
+            setScheduledDate('');
+            setIsPaid(false);
+            setIsTaken(false);
+            setBathType('avulso');
+            setPlanBathsTaken(0);
+            setHygienicGroomingDone(false);
+        }
+    }, [editingBath, selectedPet]);
+
+
+    const handleAddOrUpdateBath = async (e) => {
+        e.preventDefault();
+        if (!scheduledDate) {
+            alert('Por favor, preencha a data agendada.');
+            return;
+        }
+        if (!db || !userId || !selectedPet) return;
+
+        const bathData = {
+            dogName: selectedPet.name, // Dog name is fixed to selected pet
+            scheduledDate,
+            isPaid,
+            isTaken,
+            bathType,
+            cost: bathType === 'plano' ? 200 : 75,
+            planBathsTaken: bathType === 'plano' ? planBathsTaken : 0,
+            hygienicGroomingDone: bathType === 'plano' ? hygienicGroomingDone : false,
+        };
+
+        try {
+            if (editingBath) {
+                await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, editingBath.id), bathData);
+                setEditingBath(null);
+            } else {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`), bathData);
+            }
+            // Clear form fields after add/update
+            setScheduledDate('');
+            setIsPaid(false);
+            setIsTaken(false);
+            setBathType('avulso');
+            setPlanBathsTaken(0);
+            setHygienicGroomingDone(false);
+        } catch (error) {
+            console.error("Erro ao adicionar/atualizar banho:", error);
+        }
+    };
+
+    const handleEditBath = (bath) => {
+        setEditingBath(bath);
+        setScheduledDate(bath.scheduledDate);
+        setIsPaid(bath.isPaid);
+        setIsTaken(bath.isTaken);
+        setBathType(bath.bathType || 'avulso');
+        setPlanBathsTaken(bath.planBathsTaken || 0);
+        setHygienicGroomingDone(bath.hygienicGroomingDone || false);
+    };
+
+    const handleDeleteBath = async (id) => {
+        if (!db || !userId || !selectedPet) return;
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, id));
+        } catch (error) {
+            console.error("Erro ao excluir banho:", error);
+        }
+    };
+
+    const handleTogglePaid = async (bath) => {
+        if (!db || !userId || !selectedPet) return;
+        const bathDocRef = doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, bath.id);
+        await updateDoc(bathDocRef, { isPaid: !bath.isPaid });
+    };
+
+    const handleToggleTaken = async (bath) => {
+        if (!db || !userId || !selectedPet) return;
+        const bathDocRef = doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, bath.id);
+        await updateDoc(bathDocRef, { isTaken: !bath.isTaken });
+    };
+
+    const handleIncrementPlanBaths = async (bath) => {
+        if (!db || !userId || !selectedPet) return;
+        const newCount = Math.min(bath.planBathsTaken + 1, 4);
+        const bathDocRef = doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, bath.id);
+        await updateDoc(bathDocRef, { planBathsTaken: newCount });
+    };
+
+    const handleToggleHygienicGrooming = async (bath) => {
+        if (!db || !userId || !selectedPet) return;
+        const bathDocRef = doc(db, `artifacts/${appId}/users/${userId}/pets/${selectedPet.id}/baths`, bath.id);
+        await updateDoc(bathDocRef, { hygienicGroomingDone: !bath.hygienicGroomingDone });
+    };
+
+    return (
+        <div className="p-6 bg-blue-50 rounded-lg shadow-inner">
+            <button
+                onClick={onClose}
+                className="mb-4 bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition duration-300"
+            >
+                ← Voltar para Lista de Pets
+            </button>
+            <h2 className="text-2xl font-bold text-blue-700 mb-4 text-center">Banhos e Tosas para: {selectedPet.name}</h2>
+
+            {/* Form to add/edit bath appointments */}
+            <form onSubmit={handleAddOrUpdateBath} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 p-6 bg-blue-100 rounded-lg shadow">
+                <div>
+                    <label htmlFor="dogName" className="block text-gray-700 text-sm font-bold mb-2">
+                        Nome do Cachorro:
+                    </label>
+                    <input
+                        type="text"
+                        id="dogName"
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight bg-gray-200 cursor-not-allowed"
+                        value={selectedPet.name}
+                        readOnly // Dog name is read-only
+                    />
+                </div>
+                <div>
+                    <label htmlFor="scheduledDate" className="block text-gray-700 text-sm font-bold mb-2">
+                        Data Agendada:
+                    </label>
+                    <input
+                        type="date"
+                        id="scheduledDate"
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500"
+                        value={scheduledDate}
+                        onChange={(e) => setScheduledDate(e.target.value)}
+                        required
+                    />
+                </div>
+                <div>
+                    <label htmlFor="bathType" className="block text-gray-700 text-sm font-bold mb-2">
+                        Tipo de Banho:
+                    </label>
+                    <select
+                        id="bathType"
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500"
+                        value={bathType}
+                        onChange={(e) => setBathType(e.target.value)}
+                    >
+                        <option value="avulso">Avulso (R$ 75)</option>
+                        <option value="plano">Plano (4 Banhos + Tosa Higiênica - R$ 200)</option>
+                    </select>
+                </div>
+
+                {bathType === 'plano' && (
+                    <>
+                        <div>
+                            <label htmlFor="planBathsTaken" className="block text-gray-700 text-sm font-bold mb-2">
+                                Banhos Tomados no Plano (Máx 4):
+                            </label>
+                            <input
+                                type="number"
+                                id="planBathsTaken"
+                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500"
+                                value={planBathsTaken}
+                                onChange={(e) => setPlanBathsTaken(Math.min(Math.max(0, parseInt(e.target.value)), 4))}
+                                min="0"
+                                max="4"
+                            />
+                        </div>
+                        <div className="flex items-center justify-start md:col-span-2">
+                            <input
+                                type="checkbox"
+                                id="hygienicGroomingDone"
+                                className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                                checked={hygienicGroomingDone}
+                                onChange={(e) => setHygienicGroomingDone(e.target.checked)}
+                            />
+                            <label htmlFor="hygienicGroomingDone" className="text-gray-700 text-sm font-bold">
+                                Tosa Higiênica Realizada?
+                            </label>
+                        </div>
+                    </>
+                )}
+
+                <div className="flex items-center justify-start md:col-span-2">
+                    <input
+                        type="checkbox"
+                        id="isPaid"
+                        className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        checked={isPaid}
+                        onChange={(e) => setIsPaid(e.target.checked)}
+                    />
+                    <label htmlFor="isPaid" className="text-gray-700 text-sm font-bold">
+                        Já foi pago?
+                    </label>
+                </div>
+                <div className="flex items-center justify-start md:col-span-2">
+                    <input
+                        type="checkbox"
+                        id="isTaken"
+                        className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        checked={isTaken}
+                        onChange={(e) => setIsTaken(e.target.checked)}
+                    />
+                    <label htmlFor="isTaken" className="text-gray-700 text-sm font-bold">
+                        Banho já foi tomado?
+                    </label>
+                </div>
+                <div className="md:col-span-2 flex justify-center">
+                    <button
+                        type="submit"
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105"
+                    >
+                        {editingBath ? 'Atualizar Agendamento' : 'Adicionar Agendamento'}
+                    </button>
+                </div>
+            </form>
+
+            {/* List of bath appointments */}
+            <h3 className="text-xl font-semibold text-blue-600 mb-3">Histórico de Banhos e Tosas:</h3>
+            {baths.length === 0 ? (
+                <p className="text-gray-500 text-center">Nenhum agendamento de banho/tosa para este pet.</p>
+            ) : (
+                <div className="overflow-x-auto">
+                    <table className="min-w-full bg-white rounded-lg shadow-md">
+                        <thead className="bg-blue-200">
+                            <tr>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Data</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Tipo</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Custo</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Banhos Plano</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Tosa Hig.</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Pago</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Tomado</th>
+                                <th className="py-2 px-3 text-left text-sm font-semibold text-blue-800">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {baths.map((bath) => (
+                                <tr key={bath.id} className="border-b border-gray-200 hover:bg-gray-50">
+                                    <td className="py-2 px-3 text-gray-800">{bath.scheduledDate}</td>
+                                    <td className="py-2 px-3 text-gray-800 capitalize">{bath.bathType}</td>
+                                    <td className="py-2 px-3 text-gray-800">R$ {bath.cost ? bath.cost.toFixed(2).replace('.', ',') : 'N/A'}</td>
+                                    <td className="py-2 px-3 text-gray-800">
+                                        {bath.bathType === 'plano' ? (
+                                            <div className="flex items-center space-x-1">
+                                                <span>{bath.planBathsTaken || 0}/4</span>
+                                                <button
+                                                    onClick={() => handleIncrementPlanBaths(bath)}
+                                                    className="bg-green-400 hover:bg-green-500 text-white font-bold py-0.5 px-2 rounded-full text-xs"
+                                                    title="Incrementar banhos tomados"
+                                                    disabled={bath.planBathsTaken >= 4}
+                                                >
+                                                    +1
+                                                </button>
+                                            </div>
+                                        ) : 'N/A'}
+                                    </td>
+                                    <td className="py-2 px-3">
+                                        {bath.bathType === 'plano' ? (
+                                            <input
+                                                type="checkbox"
+                                                className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                                                checked={bath.hygienicGroomingDone || false}
+                                                onChange={() => handleToggleHygienicGrooming(bath)}
+                                            />
+                                        ) : 'N/A'}
+                                    </td>
+                                    <td className="py-2 px-3">
+                                        <input
+                                            type="checkbox"
+                                            className="h-5 w-5 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+                                            checked={bath.isPaid}
+                                            onChange={() => handleTogglePaid(bath)}
+                                        />
+                                    </td>
+                                    <td className="py-2 px-3">
+                                        <input
+                                            type="checkbox"
+                                            className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                                            checked={bath.isTaken}
+                                            onChange={() => handleToggleTaken(bath)}
+                                        />
+                                    </td>
+                                    <td className="py-2 px-3 flex space-x-2">
+                                        <button
+                                            onClick={() => handleEditBath(bath)}
+                                            className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-1 px-3 rounded-full text-xs transition duration-300 ease-in-out"
+                                        >
+                                            Editar
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteBath(bath.id)}
+                                            className="bg-red-500 hover:bg-red-600 text-white font-bold py-1 px-3 rounded-full text-xs transition duration-300 ease-in-out"
+                                        >
+                                            Excluir
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default App;
